@@ -1,0 +1,1842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Block Shots V2.6</title>
+    <style>
+        body {
+            margin: 0;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        /* The main container for the entire game UI */
+        #game-container {
+            display: flex;
+            align-items: center;
+        }
+        /* The canvas now holds all UI elements */
+        canvas { 
+            display: block; 
+        }
+        /* Styling for the left panel, which is drawn onto the canvas */
+        /* A detached effect is created by drawing with an offset */
+        #left-panel-container {
+            /* The glowing effect is applied via drawing logic on the canvas */
+            /* This div is a conceptual placeholder */
+            margin-right: 15px; /* Creates the detached look */
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+         <canvas id="game"></canvas>
+    </div>
+    <script>
+        const GHOST_PIECE_ALPHA = 0.70;
+
+        // ---------------- CONFIG ----------------
+        const CELL = Math.floor(32 * 1.1); // 10% larger
+        const COLS = 10, ROWS = 21;
+        const GRID_W = COLS * CELL, GRID_H = ROWS * CELL;
+
+        // --- NEW: Left panel for Scraps UI ---
+        const LEFT_PANEL_WIDTH = Math.floor(190 * 1.1); // 10% larger
+        
+        const SIDE_PANEL = Math.floor(380 * 1.1); // 10% larger
+        
+        // --- UPDATED: Total screen width now includes the new left panel ---
+        const SCREEN_W = LEFT_PANEL_WIDTH + GRID_W + SIDE_PANEL;
+        const SCREEN_H = GRID_H;
+
+        const FPS = 60;
+        const BLOCK_FILL_ALPHA = 0.45;
+
+        // Colors (neon/synthwave) as [r, g, b]
+        const BLACK = [8, 6, 15];
+        const DARK_PURPLE = [20, 8, 30];
+        const GRID_COLOR = [40, 30, 60];
+        const NEON_CYAN = [66, 255, 255];
+        const NEON_YELLOW = [255, 230, 80];
+        const NEON_RED = [255, 90, 110];
+        const NEON_ORANGE = [255, 150, 50];
+        const NEON_BLUE = [100, 160, 255];
+        const NEON_GREEN = [120, 255, 140];
+        const NEON_MAGENTA = [255, 90, 255];
+        const NEON_PURPLE = [200, 120, 255]; // NEW: Color for Helper Block
+        const WHITE = [230, 230, 250];
+        const MINER_BROWN = [101, 67, 33];
+
+        const PLACED_RING_OPACITY = 0.6;
+        const FALLING_RING_FADE_FACTOR = 3;
+        const MINER_GLOW_INTENSITY = 5;
+
+        // NEW: Helper Block configuration
+        const HELPER_BUFF_MULTIPLIER = 1.5; // 50% increase
+        const HELPER_BUFF_DARKNESS = 0.75; // How much darker buffed blocks appear (0.7 = 30% darker)
+        const HELPER_MINE_PARTICLE_MULTIPLIER = 1.5; // Particle count multiplier for buffed mines
+        const HELPER_MINE_PARTICLE_SPEED_MULTIPLIER = 1.3; // Particle speed multiplier for buffed mines
+        const HELPER_MORTAR_RANGE_BONUS = 1; // Additional range for mortar blocks
+
+        const SHAPES = {
+            'I': [[0, 1], [1, 1], [2, 1], [3, 1]], 'O': [[1, 0], [2, 0], [1, 1], [2, 1]],
+            'T': [[1, 0], [0, 1], [1, 1], [2, 1]], 'L': [[2, 0], [0, 1], [1, 1], [2, 1]],
+            'J': [[0, 0], [0, 1], [1, 1], [2, 1]], 'S': [[1, 0], [2, 0], [0, 1], [1, 1]],
+            'Z': [[0, 0], [1, 0], [1, 1], [2, 1]], 'H': [[0, 0], [1, 0]] // NEW: Helper Block shape (2x1)
+        };
+        const COLORS = {'I': NEON_CYAN, 'O': NEON_YELLOW, 'T': NEON_RED,
+                        'L': NEON_ORANGE, 'J': NEON_BLUE, 'S': NEON_GREEN, 'Z': NEON_MAGENTA, 'H': NEON_PURPLE};
+        
+        const BASE_HP = {'I': 15, 'O': 7, 'T': 9, 'L': 9, 'J': 9, 'S': 5, 'Z': 5, 'H': 8};
+        const O_TIMER_FRAMES = 1 * FPS;
+        const MINE_COST = 60;
+        const GRID_SHIFT_COST = 100; // NEW: Cost for grid shift power-up
+        const GRID_SHIFT_SCORE_PER_BLOCK = 15; // NEW: Score per block removed
+        const BLOCK_DUPLICATOR_COST = 200; // NEW: Cost for block duplicator power-up
+
+        // ---------- USER-SPECIFIED ENEMY PARAMETERS ----------
+        // --- NEW: Added 'scrap_reward' to each enemy definition ---
+        const ENEMY_DEFS = {
+            'grunt':      {'color': [200, 200, 220], 'hp': 5,  'speed': 0.04, 'reward': 10, 'damage': 0.1,  'scrap_reward': 2},
+            'sprinter':   {'color': [255, 160, 120], 'hp': 3,  'speed': 0.07, 'reward': 10, 'damage': 0.05, 'scrap_reward': 2},
+            'brute':      {'color': [180, 180, 255], 'hp': 20, 'speed': 0.02, 'reward': 10, 'damage': 0.2,  'scrap_reward': 3},
+            'bomber':     {'color': [255, 220, 120], 'hp': 6,  'speed': 0.03, 'reward': 15, 'damage': 1, 'scrap_reward': 2},
+            'juggernaut': {'color': [255, 60, 255],   'hp': 1,  'speed': 0.01, 'reward': 25, 'damage': 0.1,  'scrap_reward': 5},
+            'miner':      {'color': MINER_BROWN,     'hp': 85, 'speed': 0.02, 'reward': 50, 'damage': 0.2,  'scrap_reward': 15}
+        };
+const BASE_GRAVITY_TICKS = 30; 
+const DOWN_ARROW_SPEED = 2;
+        const LINE_SCORE = {1: 230, 2: 460, 3: 920, 4: 1840};
+	const SCORE_SCALE_PER_LEVEL = 0.30; // 30% additive per level
+        const POINTS_PER_LEVEL = 500;
+        const BASE_WAVE_INTERVAL = 10 * FPS;
+        const PROJECTILE_BASE_SPEED = 180.0;
+        const MORTAR_DEFAULT_DURATION = 36;
+        
+        const FONT_SMALL_SIZE = Math.floor(14 * 1.1); // 10% larger
+        const FONT_MED_SIZE = Math.floor(18 * 1.1); // 10% larger
+        const FONT_BIG_SIZE = Math.floor(32 * 1.1); // 10% larger
+        // --- NEW: Font size for the scraps counter ---
+        const FONT_SCRAPS_SIZE = Math.floor(24 * 1.1); // 10% larger
+
+	const SCRAPS_SCALE_PER_LEVEL = 0.30; // 30% additive per level
+	const LINE_CLEAR_SCRAPS = 10;
+
+        const LEGEND = [
+            [NEON_ORANGE, "Orange: Mortar turret (L/J)"], [NEON_RED, "Red: Gatling turret (T)"],
+            [NEON_YELLOW, "Yellow: Explosive mine (O)"], [NEON_CYAN, "Cyan: High-health wall (I)"],
+            [NEON_GREEN, "Green: Slowing field (S)"], [NEON_MAGENTA, "Magenta: Slowing field (Z)"],
+            [NEON_PURPLE, "Purple: Helper buff (-)"], // NEW: Added to legend
+        ];
+
+        // ---------------- UTIL ----------------
+        function drawText(ctx, text, x, y, fontSize=FONT_SMALL_SIZE, color=WHITE) {
+            ctx.font = `${fontSize}px Consolas, monospace`;
+            ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+            ctx.fillText(text, x, y);
+        }
+
+        function neonRect(ctx, x, y, w, h, color, border=2, glowIntensity = 6) {
+            let [r, g, b] = color;
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(0, 0, ctx.canvas.width, ctx.canvas.height);
+            ctx.moveTo(x, y);
+            ctx.lineTo(x, y + h);
+            ctx.lineTo(x + w, y + h);
+            ctx.lineTo(x + w, y);
+            ctx.closePath();
+            ctx.clip("evenodd");
+            for (let i = glowIntensity; i >= 2; i--) {
+                let alpha = (7 * i) / 255;
+                ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+                ctx.fillRect(x - i, y - i, w + 2 * i, h + 2 * i);
+            }
+            ctx.restore();
+            ctx.strokeStyle = `rgb(${r},${g},${b})`;
+            ctx.lineWidth = border;
+            ctx.strokeRect(x, y, w, h);
+        }
+
+        function drawRoundedRect(ctx, x, y, w, h, radius) {
+            if (w < 2 * radius) radius = w / 2;
+            if (h < 2 * radius) radius = h / 2;
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.arcTo(x + w, y, x + w, y + h, radius);
+            ctx.arcTo(x + w, y + h, x, y + h, radius);
+            ctx.arcTo(x, y + h, x, y, radius);
+            ctx.arcTo(x, y, x + w, y, radius);
+            ctx.closePath();
+            return ctx;
+        }
+
+        function neonRoundedRect(ctx, x, y, w, h, color, radius, border=2, glowIntensity = 6) {
+            let [r, g, b] = color;
+            ctx.save();
+            // Draw the glow by drawing multiple larger, transparent, filled rectangles
+            for (let i = glowIntensity; i >= 1; i--) {
+                let alpha = (glowIntensity - i + 1) * 0.025; // Adjust alpha for a soft glow
+                ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+                drawRoundedRect(ctx, x - i, y - i, w + 2 * i, h + 2 * i, radius + i);
+                ctx.fill();
+            }
+            ctx.restore();
+
+            // Draw the main border on top
+            ctx.strokeStyle = `rgb(${r},${g},${b})`;
+            ctx.lineWidth = border;
+            drawRoundedRect(ctx, x, y, w, h, radius);
+            ctx.stroke();
+        }
+
+        function randomChoice(arr) {
+            return arr[Math.floor(Math.random() * arr.length)];
+        }
+
+        // NEW: Function to darken a color
+        function darkenColor(color, factor) {
+            return color.map(c => Math.floor(c * factor));
+        }
+
+        function getLineClearMultiplier(level) {
+    return 1.0 + (level - 1) * 0.05;
+}
+
+        // NEW: Helper function to calculate score multiplier with reduced scaling after level 10
+function getScoreMultiplier(level) {
+    if (level <= 10) {
+        return 1.0 + (level - 1) * 0.30; // 30% for levels 1-10
+    } else {
+        // 30% for first 10 levels, then 15% for each level beyond 10
+        return 1.0 + 9 * 0.30 + (level - 10) * 0.15;
+    }
+}
+
+// NEW: Helper function to calculate gravity multiplier with reduced scaling after level 10
+function getGravityMultiplier(level) {
+    if (level <= 10) {
+        return 1.0 + (level - 1) * 0.30; // 30% for levels 1-10
+    } else {
+        // 30% for first 10 levels, then 15% for each level beyond 10
+        return 1.0 + 9 * 0.30 + (level - 10) * 0.15;
+    }
+}
+
+// NEW: Helper function to calculate scraps multiplier with reduced scaling after level 10
+function getScrapsMultiplier(level) {
+    if (level <= 10) {
+        return 1.0 + (level - 1) * 0.30; // 30% for levels 1-10
+    } else {
+        // 30% for first 10 levels, then 15% for each level beyond 10
+        return 1.0 + 9 * 0.30 + (level - 10) * 0.15;
+    }
+}
+
+        // NEW: Function to draw downward arrow icon
+        function drawDownArrow(ctx, x, y, size, color) {
+            let [r, g, b] = color;
+            ctx.strokeStyle = `rgb(${r},${g},${b})`;
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.lineWidth = 3;
+            
+            // Draw arrow shaft
+            let shaftWidth = size * 0.3;
+            let shaftHeight = size * 0.6;
+            let shaftX = x + (size - shaftWidth) / 2;
+            let shaftY = y + size * 0.1;
+            ctx.fillRect(shaftX, shaftY, shaftWidth, shaftHeight);
+            
+            // Draw arrow head (triangle)
+            let headSize = size * 0.4;
+            let headX = x + size / 2;
+            let headY = y + size * 0.9;
+            ctx.beginPath();
+            ctx.moveTo(headX, headY);
+            ctx.lineTo(headX - headSize/2, headY - headSize);
+            ctx.lineTo(headX + headSize/2, headY - headSize);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+// NEW: Function to draw three overlapping mortar blocks icon with correct L-shape
+function drawDuplicatorIcon(ctx, x, y, size, color) {
+    let [r, g, b] = color;
+    let baseAlpha = 0.7; // Make icon more transparent
+    
+    let blockSize = size * 0.15; // Individual cell size
+    let spacingMultiplier = 1.8; // CHANGE THIS VALUE to adjust spacing (1.0 = touching, higher = more spaced)
+    let spacing = blockSize * spacingMultiplier;
+    
+    // Rest of the function stays the same...
+    let positions = [
+        [x + size * 0.1, y + size * 0.1],
+        [x + size * 0.1 + spacing, y + size * 0.1 + spacing],
+        [x + size * 0.1 + spacing * 2, y + size * 0.1 + spacing * 2]
+    ];
+    
+    for (let i = 0; i < positions.length; i++) {
+        let [px, py] = positions[i];
+        let alpha = baseAlpha - (i * 0.15); // Make back pieces more transparent
+        
+        // Draw the L-shape: 2 blocks horizontally at bottom, 2 blocks vertically at right
+        // This creates the proper L-shape like in Tetris
+        let lBlocks = [
+            [px + blockSize, py + blockSize * 2],     // Bottom center
+            [px + blockSize * 2, py + blockSize * 2], // Bottom right
+            [px + blockSize * 2, py + blockSize],     // Middle right
+            [px + blockSize * 2, py]                  // Top right
+        ];
+        
+        for (let blockPos of lBlocks) {
+            let [bx, by] = blockPos;
+            
+            // Fill each block
+            ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+            ctx.fillRect(bx, by, blockSize, blockSize);
+            
+            // Outline each block
+            ctx.strokeStyle = `rgba(${r},${g},${b},${alpha + 0.3})`;
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(bx, by, blockSize, blockSize);
+            
+            // Add highlight for 3D effect
+            ctx.fillStyle = `rgba(${Math.min(255, r + 50)},${Math.min(255, g + 50)},${Math.min(255, b + 50)},${alpha * 0.4})`;
+            ctx.fillRect(bx, by, 2, blockSize); // Left highlight
+            ctx.fillRect(bx, by, blockSize, 2); // Top highlight
+        }
+    }
+}
+
+        // ---------------- OBJECTS ----------------
+        class Piece {
+            constructor(kind) {
+                this.kind = kind;
+                this.cells = SHAPES[kind].map(c => [...c]);
+                if (this.kind === 'H') {
+                    // Center the Helper block based on its width
+                    let xs = this.cells.map(c => c[0]);
+                    let width = Math.max(...xs) - Math.min(...xs) + 1;
+                    this.x = Math.floor(COLS / 2) - Math.floor(width / 2);
+                } else {
+                    // Use original offset for all other pieces
+                    this.x = Math.floor(COLS / 2) - 2;
+                }
+                this.y = -1;
+                this.color = COLORS[kind];
+            }
+            getGlobalCells() {
+                return this.cells.map(([cx, cy]) => [this.x + cx, this.y + cy]);
+            }
+            rotate(board) {
+                if (this.kind === 'O') return; // Only 'O' doesn't rotate
+                let rotated = this.cells.map(([cx, cy]) => [-cy + 1, cx - 1]);
+                let kicks = [[0, 0], [1, 0], [-1, 0], [0, -1]];
+                for (let [kx, ky] of kicks) {
+                    let can = true;
+                    for (let [cx, cy] of rotated) {
+                        let gx = this.x + cx + kx;
+                        let gy = this.y + cy + ky;
+                        if (gx < 0 || gx >= COLS || gy >= ROWS || (gy >= 0 && board[gy][gx] !== null)) {
+                            can = false;
+                            break;
+                        }
+                    }
+                    if (can) {
+                        this.cells = rotated.map(([cx, cy]) => [cx + kx, cy + ky]);
+                        return;
+                    }
+                }
+            }
+            move(dx, dy, board) {
+                this.x += dx;
+                this.y += dy;
+                for (let [gx, gy] of this.getGlobalCells()) {
+                    if (gx < 0 || gx >= COLS || gy >= ROWS || (gy >= 0 && board[gy][gx] !== null)) {
+                        this.x -= dx;
+                        this.y -= dy;
+                        return false;
+                    }
+                }
+                return true;
+            }
+        }
+
+        class Enemy {
+    constructor(etype, col, level=1) {
+        this.etype = etype;
+        this.col = col;
+        this.level = level;
+        let d = ENEMY_DEFS[etype];
+        
+        // NEW: Reduced scaling after level 10 (2.5% instead of 5%)
+        let levelMultiplier;
+        if (level <= 10) {
+            levelMultiplier = 1.0 + (level - 1) * 0.05; // 5% for levels 1-10
+        } else {
+            // 5% for first 10 levels, then 2.5% for each level beyond 10
+            levelMultiplier = 1.0 + 9 * 0.05 + (level - 10) * 0.025;
+        }
+        
+        this.maxHp = Math.floor(d['hp'] * levelMultiplier);
+        this.hp = this.maxHp;
+        this.baseSpeed = d['speed'] * levelMultiplier;
+        this.baseDamage = d.damage * levelMultiplier; // Store base damage with scaling
+        this.color = d['color'];
+        this.reward = d['reward'];
+        this.scrap_reward = d['scrap_reward'];
+        this.y = ROWS - 1;
+        this.progress = 0.0;
+        this.stunned = 0;
+        this.slowLevel = 0;
+        this.history = [];
+        this.isMining = false;
+        this.miningTargets = [];
+        let now = Date.now();
+        let px = this.col * CELL + CELL / 2;
+        let py = Math.floor(this.y * CELL + CELL / 2);
+        this.history.push([now, px, py]);
+    }
+            effectiveSpeed() {
+                let s = this.baseSpeed;
+                if (this.slowLevel > 0) s *= (0.80 ** this.slowLevel);
+                return s;
+            }
+            update(board) {
+    if (this.stunned > 0) this.stunned -= 1;
+    let row = Math.round(this.y);
+    this.isMining = false;
+    if (this.etype === 'miner') {
+        this.miningTargets = [];
+        let targetRow = row - 1;
+        if (targetRow >= 0) {
+            let hasBlocksToMine = false;
+            for (let dx = -1; dx <= 1; dx++) {
+                let targetCol = this.col + dx;
+                if (targetCol >= 0 && targetCol < COLS && board[targetRow][targetCol] !== null) {
+                    hasBlocksToMine = true;
+                    break;
+                }
+            }
+            if (hasBlocksToMine) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    let targetCol = this.col + dx;
+                    if (targetCol >= 0 && targetCol < COLS && board[targetRow][targetCol] !== null) {
+                        let block = board[targetRow][targetCol];
+                        // FIXED: Use pre-calculated base damage instead of recalculating
+                        let damageAmount = this.baseDamage;
+                        if (this.slowLevel > 0) damageAmount *= (0.9 ** this.slowLevel);
+                        // Apply buff modifier if block is buffed
+                        if (block['buffed']) damageAmount /= HELPER_BUFF_MULTIPLIER;
+                        block['hp'] -= damageAmount;
+                        if (block['hp'] <= 0) board[targetRow][targetCol] = null;
+                        this.miningTargets.push([targetCol, targetRow]);
+                    }
+                }
+            }
+        }
+        let blocked = false;
+        for (let dx = -1; dx <= 1; dx++) {
+            let checkCol = this.col + dx;
+            if (checkCol >= 0 && checkCol < COLS && 0 <= row && row < ROWS && board[row][checkCol] !== null) {
+                blocked = true;
+                break;
+            }
+        }
+        if (blocked) {
+            for (let dx = -1; dx <= 1; dx++) {
+                let checkCol = this.col + dx;
+                if (checkCol >= 0 && checkCol < COLS && 0 <= row && row < ROWS && board[row][checkCol] !== null) {
+                    let block = board[row][checkCol];
+                    // FIXED: Use pre-calculated base damage instead of recalculating
+                    let damageAmount = this.baseDamage;
+                    if (this.slowLevel > 0) damageAmount *= (0.9 ** this.slowLevel);
+                    // Apply buff modifier if block is buffed
+                    if (block['buffed']) damageAmount /= HELPER_BUFF_MULTIPLIER;
+                    block['hp'] -= damageAmount;
+                    if (block['hp'] <= 0) board[row][checkCol] = null;
+                    this.miningTargets.push([checkCol, row]);
+                }
+            }
+        } else {
+            let step = this.effectiveSpeed();
+            this.progress += step;
+            while (this.progress >= 1.0) {
+                this.y -= 1;
+                this.progress -= 1.0;
+                if (this.y < 0) return "TOP";
+            }
+        }
+        this.isMining = this.miningTargets.length > 0;
+    } else {
+        // FIXED: Handle non-miner enemies (this was duplicated and broken before)
+        if (0 <= row && row < ROWS && board[row][this.col] !== null) {
+            if (this.etype === 'bomber') return "BOMB";
+            let block = board[row][this.col];
+            // FIXED: Use pre-calculated base damage instead of recalculating
+            let damageAmount = this.baseDamage;
+            if (this.slowLevel > 0) damageAmount *= (0.9 ** this.slowLevel);
+            // Apply buff modifier if block is buffed
+            if (block['buffed']) damageAmount /= HELPER_BUFF_MULTIPLIER;
+            block['hp'] -= damageAmount;
+            if (block['hp'] <= 0) board[row][this.col] = null;
+        } else {
+            let step = this.effectiveSpeed();
+            this.progress += step;
+            while (this.progress >= 1.0) {
+                this.y -= 1;
+                this.progress -= 1.0;
+                if (this.y < 0) return "TOP";
+            }
+        }
+    }
+    
+    // Update position history
+    let now = Date.now();
+    let gridX = LEFT_PANEL_WIDTH; // Account for left panel offset
+    let px = gridX + this.col * CELL + CELL / 2;
+    let py = Math.floor(this.y * CELL + CELL / 2);
+    this.history.push([now, px, py]);
+    let cutoff = now - 3500;
+    while (this.history.length > 1 && this.history[0][0] < cutoff) {
+        this.history.shift();
+    }
+    return null;
+}
+            getPositionAtMs(targetMs) {
+                let gridX = LEFT_PANEL_WIDTH; // Offset for positioning
+                if (this.history.length === 0) {
+                    return [gridX + this.col * CELL + CELL / 2, Math.floor(this.y * CELL + CELL / 2)];
+                }
+                if (targetMs <= this.history[0][0]) return [this.history[0][1], this.history[0][2]];
+                if (targetMs >= this.history[this.history.length - 1][0]) return [this.history[this.history.length - 1][1], this.history[this.history.length - 1][2]];
+                for (let i = 0; i < this.history.length - 1; i++) {
+                    let [t0, x0, y0] = this.history[i];
+                    let [t1, x1, y1] = this.history[i + 1];
+                    if (t0 <= targetMs && targetMs <= t1) {
+                        if (t1 === t0) return [x0, y0];
+                        let frac = (targetMs - t0) / (t1 - t0);
+                        return [x0 + (x1 - x0) * frac, y0 + (y1 - y0) * frac];
+                    }
+                }
+                return [this.history[this.history.length - 1][1], this.history[this.history.length - 1][2]];
+            }
+            draw(ctx) {
+                let gridX = LEFT_PANEL_WIDTH;
+                let px = gridX + this.col * CELL + CELL / 2;
+                let py = Math.floor(this.y * CELL + CELL / 2);
+                let [cr, cg, cb] = this.color;
+                if (this.etype === 'juggernaut') {
+                    let size = CELL / 2.5;
+                    for (let i = 6; i > 0; i--) {
+                        ctx.fillStyle = `rgba(${cr},${cg},${cb},${(12 * i) / 255})`;
+                        let glowSize = size + i * 4;
+                        ctx.fillRect(px - glowSize/2, py - glowSize/2, glowSize, glowSize);
+                    }
+                    ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+                    ctx.fillRect(px - size/2, py - size/2, size, size);
+                    ctx.strokeStyle = `rgb(${Math.min(255, cr + 50)},${Math.min(255, cg + 50)},${Math.min(255, cb + 50)})`;
+                    ctx.lineWidth = 3;
+                    ctx.strokeRect(px - size/2, py - size/2, size, size);
+                } else if (this.etype === 'miner') {
+                    let width = CELL * 3;
+                    let height = CELL;
+                    for (let i = MINER_GLOW_INTENSITY; i > 0; i--) {
+                        ctx.fillStyle = `rgba(${cr},${cg},${cb},${(15 * i) / 255})`;
+                        let glowWidth = width + i * MINER_GLOW_INTENSITY;
+                        let glowHeight = height + i * (MINER_GLOW_INTENSITY * 0.7);
+                        ctx.fillRect(px - glowWidth/2, py - glowHeight/2, glowWidth, glowHeight);
+                    }
+                    ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+                    ctx.fillRect(px - width/2, py - height/2, width, height);
+                    ctx.strokeStyle = `rgb(${Math.min(255, cr + 80)},${Math.min(255, cg + 80)},${Math.min(255, cb + 80)})`;
+                    ctx.lineWidth = 4;
+                    ctx.strokeRect(px - width/2, py - height/2, width, height);
+                    if (this.isMining) {
+                        for (let [targetCol, miningRow] of this.miningTargets) {
+                            let effectX = gridX + targetCol * CELL + CELL / 2;
+                            let effectY = miningRow * CELL + CELL / 2;
+                            let isAbove = (miningRow === Math.round(this.y) - 1);
+                            let particleCount = isAbove ? 3 : 2;
+                            let spread = isAbove ? CELL : CELL * 0.7;
+                            let colorG = isAbove ? 255 : 180;
+                            let colorB = isAbove ? 100 : 60;
+                            let size = isAbove ? 2 : 1.5;
+                            for (let j = 0; j < particleCount; j++) {
+                                let sparkX = effectX + (Math.random() - 0.5) * spread;
+                                let sparkY = effectY + (Math.random() - 0.5) * spread;
+                                ctx.fillStyle = `rgba(255, ${colorG}, ${colorB}, ${isAbove ? Math.random() * 0.8 : Math.random() * 0.6})`;
+                                ctx.beginPath(); ctx.arc(sparkX, sparkY, size, 0, Math.PI * 2); ctx.fill();
+                            }
+                        }
+                    }
+                } else {
+                    let r = CELL / 3;
+                    for (let i = 4; i > 0; i--) {
+                        ctx.fillStyle = `rgba(${cr},${cg},${cb},${(20 * i) / 255})`;
+                        ctx.beginPath(); ctx.arc(px, py, r + i * 3, 0, Math.PI * 2); ctx.fill();
+                    }
+                    ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+                    ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.fill();
+                }
+                let hpW = this.etype === 'miner' ? CELL * 2.5 : CELL - 6;
+                let hpH = this.etype === 'miner' ? 8 : 5;
+                let hpX = px - hpW / 2;
+                let hpY = py + (this.etype === 'juggernaut' ? CELL/2.5/2 + 6 : this.etype === 'miner' ? CELL/2 + 10 : CELL/3 + 4);
+                let frac = Math.max(0, this.hp / this.maxHp);
+                ctx.fillStyle = 'rgb(40,40,60)';
+                ctx.fillRect(hpX, hpY, hpW, hpH);
+                ctx.fillStyle = this.etype === 'miner' ? 'rgb(255,165,0)' : 'rgb(100,220,120)';
+                ctx.fillRect(hpX, hpY, Math.floor(hpW * frac), hpH);
+            }
+        }
+
+        class Particle {
+            constructor(x, y, vx, vy, color, life, size=3) {
+                this.x = x; this.y = y; this.vx = vx; this.vy = vy;
+                this.color = color; this.life = life; this.maxLife = life;
+                this.size = size; // NEW: particle size parameter
+            }
+            update() {
+                this.x += this.vx; this.y += this.vy;
+                this.vx *= 0.98; this.vy *= 0.98;
+                this.life -= 1;
+            }
+            draw(ctx) {
+                if (this.life <= 0) return;
+                let alpha = this.life / Math.max(1, this.maxLife);
+                let [r, g, b] = this.color;
+                ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+                ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.fill();
+            }
+        }
+
+        class Projectile {
+            constructor(sx, sy, targetEnemy, game, color, damage=1) {
+                this.x = sx; this.y = sy; this.target = targetEnemy; this.game = game;
+                let estEnemyPxPerSec = Math.max(16.0, targetEnemy.baseSpeed * CELL * FPS);
+                this.speed = Math.max(300.0, estEnemyPxPerSec * 1.2);
+                this.color = color; this.damage = damage;
+                this.dead = false; this.maxLifeMs = 3000;
+                this.spawnTime = Date.now(); this.arcPhase = Math.random() * Math.PI * 2;
+                this.hitRadius = CELL * 0.6;
+            }
+            update() {
+                let now = Date.now();
+                if (this.dead || now - this.spawnTime > this.maxLifeMs) { this.dead = true; return; }
+                if (this.target !== null && this.target.hp <= 0) this.target = null;
+                if (this.target === null) { this.dead = true; return; }
+                let [tx, ty] = this.target.getPositionAtMs(now);
+                let dx = tx - this.x, dy = ty - this.y;
+                let dist = Math.hypot(dx, dy) || 1.0;
+                let dt = 1.0 / FPS;
+                this.x += (dx / dist) * this.speed * dt;
+                this.y += (dy / dist) * this.speed * dt;
+                this.arcPhase += 0.25;
+                let [curx, cury] = this.target.getPositionAtMs(now);
+                if (Math.hypot(curx - this.x, cury - this.y) <= this.hitRadius) {
+                    if (this.target.etype === 'juggernaut') {
+                        this.game.spawnExplosionParticles(curx, cury, [100, 100, 100], 4, 1.0);
+                    } else {
+                        this.target.hp -= this.damage;
+                        this.game.spawnExplosionParticles(curx, cury, this.color, 8, 1.6);
+                    }
+                    this.dead = true;
+                }
+            }
+            draw(ctx) {
+                let bob = Math.sin(this.arcPhase) * 6;
+                let [r, g, b] = this.color;
+                ctx.fillStyle = `rgb(${r},${g},${b})`;
+                ctx.beginPath(); ctx.arc(Math.floor(this.x), Math.floor(this.y - bob), 4.2, 0, Math.PI * 2); ctx.fill();
+            }
+        }
+
+        // ---------------- GAME CLASS ----------------
+        class Game {
+    constructor() {
+        this.frameCount = 0;
+        this.lastFpsTime = performance.now();
+        this.currentFps = 0;
+        this.canvas = document.getElementById('game');
+        this.ctx = this.canvas.getContext('2d');
+        this.canvas.width = SCREEN_W;
+        this.canvas.height = SCREEN_H;
+        this.reset();
+        this.moveCool = 0;
+        this.keysPressed = {};
+        this.lastTime = performance.now();
+        this.mineButtonBounds = {}; // For click detection
+        this.gridShiftButtonBounds = {}; // NEW: For grid shift button click detection
+        document.addEventListener('keydown', this.handleKeyDown.bind(this));
+        document.addEventListener('keyup', this.handleKeyUp.bind(this));
+        this.canvas.addEventListener('click', this.handleMouseClick.bind(this));
+        requestAnimationFrame(this.loop.bind(this));
+    }
+    
+    reset() {
+        this.lockDelay = 0;
+        this.blockDuplicatorButtonBounds = {}; // For click detection
+        this.duplicatorQueue = []; // Queue of duplicated block types
+        this.duplicatorParticles = []; // For button animation
+        this.board = Array.from({length: ROWS}, () => Array(COLS).fill(null));
+        this.score = 0;
+        this.scraps = 0; // NEW: Initialize scraps
+        this.level = 1;
+        this.piece = new Piece(randomChoice(Object.keys(SHAPES)));
+        this.nextPiece = new Piece(randomChoice(Object.keys(SHAPES)));
+        this.holdPiece = null;
+        this.canHold = true;
+        this.gravityTimer = 0;
+        this.gravitySpeed = Math.max(3, Math.floor(BASE_GRAVITY_TICKS / getGravityMultiplier(this.level)));
+        this.enemies = [];
+        this.projectiles = [];
+        this.mortarProjectiles = [];
+        this.waveTimer = BASE_WAVE_INTERVAL;
+        this.waveNumber = 0;
+        this.paused = false;
+        this.gameOver = false;
+        this.gameOverReason = "";
+        this.particles = [];
+        this.ticks = 0;
+    }
+    
+    // NEW: Ghost piece position calculation
+    getGhostPiecePosition() {
+        if (!this.piece) return null;
+        
+        // Create a copy of the current piece
+        let ghostPiece = {
+            x: this.piece.x,
+            y: this.piece.y,
+            cells: this.piece.cells.map(c => [...c]),
+            kind: this.piece.kind
+        };
+        
+        // Move it down until it can't move anymore
+        while (true) {
+            ghostPiece.y += 1;
+            let canMove = true;
+            for (let [cx, cy] of ghostPiece.cells) {
+                let gx = ghostPiece.x + cx;
+                let gy = ghostPiece.y + cy;
+                if (gx < 0 || gx >= COLS || gy >= ROWS || (gy >= 0 && this.board[gy][gx] !== null)) {
+                    canMove = false;
+                    break;
+                }
+            }
+            if (!canMove) {
+                ghostPiece.y -= 1; // Step back to last valid position
+                break;
+            }
+        }
+        
+        return ghostPiece;
+    }
+    
+    buyMineBlock() {
+        if (this.scraps >= MINE_COST) {
+            this.scraps -= MINE_COST;
+            this.piece = new Piece('O');
+            this.piece.x = Math.floor(COLS / 2) - 2;
+            this.piece.y = -1;
+        }
+    }
+            // NEW: Grid shift power-up function
+            useGridShift() {
+                if (this.scraps >= GRID_SHIFT_COST) {
+                    this.scraps -= GRID_SHIFT_COST;
+                    
+                    // Count blocks in bottom row for scoring
+                    let removedBlocks = 0;
+                    for (let x = 0; x < COLS; x++) {
+                        if (this.board[ROWS - 1][x] !== null) {
+                            removedBlocks++;
+                        }
+                    }
+                    
+                    // Shift all rows down by one
+                    for (let y = ROWS - 1; y > 0; y--) {
+                        for (let x = 0; x < COLS; x++) {
+                            this.board[y][x] = this.board[y - 1][x];
+                        }
+                    }
+                    
+                    // Clear the top row
+                    for (let x = 0; x < COLS; x++) {
+                        this.board[0][x] = null;
+                    }
+                    
+                    // Award score for removed blocks
+                    this.score += removedBlocks * GRID_SHIFT_SCORE_PER_BLOCK;
+                    
+                    // Visual effects for removed blocks
+                    if (removedBlocks > 0) {
+                        let gridX = LEFT_PANEL_WIDTH;
+                        for (let x = 0; x < COLS; x++) {
+                            this.spawnExplosionParticles(
+                                gridX + x * CELL + CELL / 2, 
+                                (ROWS - 1) * CELL + CELL / 2, 
+                                NEON_MAGENTA, 
+                                6, 
+                                2.0
+                            );
+                        }
+                    }
+                    
+                    // Re-apply helper buffs after grid shift
+                    this.applyHelperBuffs();
+                }
+            }
+
+            // NEW: Space bar reward function
+            giveSpaceReward() {
+                let baseScore = 10;
+                let baseScraps = 2;
+                
+                // Apply level multipliers
+                let scoreReward = Math.round(baseScore * getScoreMultiplier(this.level));
+                let scrapReward = Math.round(baseScraps * getScrapsMultiplier(this.level));
+                
+                this.score += scoreReward;
+                this.scraps += scrapReward;
+            }
+            handleMouseClick(e) {
+    if (this.paused || this.gameOver) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    // Check mine button click
+    if (this.mineButtonBounds &&
+        mouseX >= this.mineButtonBounds.x && mouseX <= this.mineButtonBounds.x + this.mineButtonBounds.w &&
+        mouseY >= this.mineButtonBounds.y && mouseY <= this.mineButtonBounds.y + this.mineButtonBounds.h) {
+        this.buyMineBlock();
+    }
+    
+    // Check grid shift button click
+    if (this.gridShiftButtonBounds &&
+        mouseX >= this.gridShiftButtonBounds.x && mouseX <= this.gridShiftButtonBounds.x + this.gridShiftButtonBounds.w &&
+        mouseY >= this.gridShiftButtonBounds.y && mouseY <= this.gridShiftButtonBounds.y + this.gridShiftButtonBounds.h) {
+        this.useGridShift();
+    }
+    
+    // NEW: Check block duplicator button click
+    if (this.blockDuplicatorButtonBounds &&
+        mouseX >= this.blockDuplicatorButtonBounds.x && mouseX <= this.blockDuplicatorButtonBounds.x + this.blockDuplicatorButtonBounds.w &&
+        mouseY >= this.blockDuplicatorButtonBounds.y && mouseY <= this.blockDuplicatorButtonBounds.y + this.blockDuplicatorButtonBounds.h) {
+        this.useBlockDuplicator();
+    }
+}
+            holdCurrentPiece() {
+                if (!this.canHold) return;
+                this.canHold = false;
+                if (this.holdPiece === null) {
+                    this.holdPiece = this.piece;
+                    this.piece = this.nextPiece;
+                    this.nextPiece = new Piece(randomChoice(Object.keys(SHAPES)));
+                } else {
+                    [this.piece, this.holdPiece] = [this.holdPiece, this.piece];
+                }
+                this.piece.x = Math.floor(COLS / 2) - 2;
+                this.piece.y = -1;
+                this.piece.cells = SHAPES[this.piece.kind].map(c => [...c]);
+            }
+            handleKeyDown(e) {
+    let key = e.key.toLowerCase();
+    if (key === 'p') { if (!this.gameOver) this.paused = !this.paused; }
+    if (key === 'r') { if (this.gameOver) this.reset(); }
+    if (!this.paused && !this.gameOver) {
+        if (key === 'arrowup' || key === 'w') this.piece.rotate(this.board);
+        else if (key === 'arrowdown' || key === 's') {
+    // Don't move the piece here - let the gravity speedup handle it
+}
+        else if (key === ' ') {
+            while (this.piece.move(0, 1, this.board)) {}
+            this.placePieceOnBoard(this.piece);
+            this.giveSpaceReward();
+        }
+        else if (key === 'z') this.buyMineBlock();
+        else if (key === 'x') this.useGridShift();
+        else if (key === 'c') this.useBlockDuplicator();
+        else if (key === 'e') this.holdCurrentPiece();
+    }
+    this.keysPressed[key] = true;
+}
+            handleKeyUp(e) { 
+    let key = e.key.toLowerCase();
+    delete this.keysPressed[key]; 
+}
+            loop(time) {
+    // FPS calculation
+    this.frameCount++;
+    if (time - this.lastFpsTime >= 1000) { // Update every second
+        this.currentFps = Math.round(this.frameCount * 1000 / (time - this.lastFpsTime));
+        this.frameCount = 0;
+        this.lastFpsTime = time;
+    }
+    
+    requestAnimationFrame(this.loop.bind(this));
+    if (this.paused || this.gameOver) { this.draw(); return; }
+    
+    if (this.keysPressed['arrowleft'] || this.keysPressed['a']) {
+        if (this.moveCool <= 0) { this.piece.move(-1, 0, this.board); this.moveCool = 15; }
+    }
+    if (this.keysPressed['arrowright'] || this.keysPressed['d']) {
+        if (this.moveCool <= 0) { this.piece.move(1, 0, this.board); this.moveCool = 15; }
+    }
+    
+ if (this.keysPressed['arrowdown'] || this.keysPressed['s']) {
+    // Faster gravity
+    this.gravityTimer += 1;
+    if (this.gravityTimer >= DOWN_ARROW_SPEED) {
+        this.gravityTimer = 0;
+
+        if (this.piece.move(0, 1, this.board)) {
+            // Reset lock delay if the piece still moves
+            this.lockDelay = 0;
+        } else {
+            // Piece can't move down -> start / continue 0.3s lock delay
+            if (this.lockDelay <= 0) {
+                this.lockDelay = Math.floor(0.1 * FPS); // 0.3s delay
+            } else {
+                this.lockDelay--;
+                if (this.lockDelay <= 0) {
+                    this.placePieceOnBoard();
+                }
+            }
+        }
+    }
+} else {
+    // Normal gravity (unchanged, still has natural buffer)
+    this.gravityTimer += 1;
+    if (this.gravityTimer >= this.gravitySpeed) {
+        this.gravityTimer = 0;
+        if (!this.piece.move(0, 1, this.board)) this.placePieceOnBoard();
+    }
+}
+
+
+
+if (this.moveCool > 0) this.moveCool--;
+this.gameTick();
+this.draw();
+
+if (this.moveCool > 0) this.moveCool--;
+this.draw();
+            }
+
+            isMiniBossWave(waveNum) { return waveNum % 5 === 0 && waveNum > 0; }
+            isPreMiniBossWave(waveNum) { return (waveNum + 1) % 5 === 0 && waveNum > 0; }
+            spawnWave() {
+    this.waveNumber += 1;
+    if (this.isMiniBossWave(this.waveNumber)) {
+        this.enemies = [];
+        let minerCol = Math.floor(COLS / 2);
+        this.enemies.push(new Enemy('miner', minerCol, this.level));
+        let availableTypes = ['grunt', 'sprinter', 'brute', 'bomber'];
+        this.enemies.push(new Enemy(randomChoice(availableTypes), Math.max(0, minerCol - 3), this.level));
+        this.enemies.push(new Enemy(randomChoice(availableTypes), Math.min(COLS - 1, minerCol + 3), this.level));
+    } else {
+        // CHANGED: Removed (this.level - 1) from the calculation
+        let count = 3 + Math.floor(Math.max(0, this.waveNumber - 15) / 3) + Math.floor(Math.min(15, this.waveNumber) / 2);
+        
+        // Count existing juggernauts on the field
+        let existingJuggernauts = this.enemies.filter(e => e.etype === 'juggernaut').length;
+        let maxJuggernauts = 3;
+        let juggernaatsToSpawn = Math.max(0, maxJuggernauts - existingJuggernauts);
+        
+        // Spawn enemies for this wave
+        for (let i = 0; i < count; i++) {
+            let et;
+            // If we can still spawn juggernauts and random chance (roughly 1 in 8)
+            if (juggernaatsToSpawn > 0 && Math.random() < 0.125) {
+                et = 'juggernaut';
+                juggernaatsToSpawn--;
+            } else {
+                // Spawn regular enemies
+                let regularTypes = ['grunt', 'sprinter', 'brute', 'bomber'];
+                et = randomChoice(regularTypes);
+            }
+            this.enemies.push(new Enemy(et, Math.floor(Math.random() * COLS), this.level));
+        }
+    }
+}
+            placePieceOnBoard() {
+    
+    // First place all pieces on the board
+    for (let [gx, gy] of this.piece.getGlobalCells()) {
+        if (gy < 0) {
+            this.gameOver = true; 
+            this.gameOverReason = "stacked to top"; 
+            return;
+        }
+        let shape = this.piece.kind;
+        let meta = {'shape': shape, 'hp': BASE_HP[shape], 'buffed': false};
+        if (shape === 'O') meta['oTimer'] = O_TIMER_FRAMES;
+        if (shape === 'T') meta['gatCool'] = 0;
+        if (shape === 'L' || shape === 'J') meta['mortarCool'] = 0;
+        if (shape === 'S' || shape === 'Z') meta['pulseTimer'] = 0;
+        this.board[gy][gx] = meta;
+    }
+    
+    // Apply Helper block buffs if this was a Helper block
+    if (this.piece.kind === 'H') {
+        this.applyHelperBuffs();
+    }
+    
+    // Generate next piece - check duplicator queue first
+    if (this.duplicatorQueue.length > 0) {
+        this.piece = new Piece(this.duplicatorQueue.shift());
+    } else {
+        this.piece = this.nextPiece;
+    }
+    
+    // Generate new next piece - properly handle queue preview
+    if (this.duplicatorQueue.length > 0) {
+        // If there are still items in queue, show the next one from queue
+        this.nextPiece = new Piece(this.duplicatorQueue[0]);
+    } else {
+        // If queue is empty, generate a random piece
+        this.nextPiece = new Piece(randomChoice(Object.keys(SHAPES)));
+    }
+    this.canHold = true;
+    this.clearFullLines();
+}
+            
+            // NEW: Apply buffs from all Helper blocks on the board
+            applyHelperBuffs() {
+                // First clear all buffs
+                for (let y = 0; y < ROWS; y++) {
+                    for (let x = 0; x < COLS; x++) {
+                        if (this.board[y][x] !== null) {
+                            this.board[y][x]['buffed'] = false;
+                            // FIXED: Cap health to normal maximum when removing buffs
+                            let shape = this.board[y][x]['shape'];
+                            if (shape !== 'H' && this.board[y][x]['hp'] > BASE_HP[shape]) {
+                                this.board[y][x]['hp'] = BASE_HP[shape];
+                            }
+                        }
+                    }
+                }
+                
+                // Find all Helper blocks
+                let helperBlocks = [];
+                for (let y = 0; y < ROWS; y++) {
+                    for (let x = 0; x < COLS; x++) {
+                        if (this.board[y][x] !== null && this.board[y][x]['shape'] === 'H') {
+                            helperBlocks.push([x, y]);
+                        }
+                    }
+                }
+                
+                // For each Helper block, find and buff adjacent blocks
+                for (let [hx, hy] of helperBlocks) {
+                    // Check all 8 adjacent cells (including diagonals)
+                    let adjacentCells = [
+                        [hx-1, hy-1], [hx, hy-1], [hx+1, hy-1],
+                        [hx-1, hy],               [hx+1, hy],
+                        [hx-1, hy+1], [hx, hy+1], [hx+1, hy+1]
+                    ];
+                    
+                    // Track which blocks we've already processed for spreading
+                    let processedBlocks = new Set();
+                    
+                    for (let [ax, ay] of adjacentCells) {
+                        if (ax >= 0 && ax < COLS && ay >= 0 && ay < ROWS && this.board[ay][ax] !== null) {
+                            let cell = this.board[ay][ax];
+                            if (cell['shape'] !== 'H') {
+                                // Apply buff to this cell
+                                this.buffCell(ax, ay);
+                                
+                                // Spread buff to connected same-type blocks (orthogonally only)
+                                this.spreadBuff(ax, ay, cell['shape'], processedBlocks);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // NEW: Buff a single cell with full health restoration
+            buffCell(x, y) {
+                let cell = this.board[y][x];
+                if (cell !== null) {
+                    cell['buffed'] = true;
+                    // Restore to full buffed health
+                    let maxBuffedHp = cell['shape'] !== 'H' ? BASE_HP[cell['shape']] * HELPER_BUFF_MULTIPLIER : BASE_HP[cell['shape']];
+                    cell['hp'] = maxBuffedHp;
+                }
+            }
+            
+            // NEW: Spread buff to connected blocks of the same type (orthogonal connections only)
+            spreadBuff(x, y, shapeType, processedBlocks) {
+                let stack = [[x, y]];
+                let key = `${x},${y}`;
+                if (processedBlocks.has(key)) return;
+                processedBlocks.add(key);
+                
+                while (stack.length > 0) {
+                    let [cx, cy] = stack.pop();
+                    
+                    // Check orthogonal neighbors only for spreading
+                    let orthogonalNeighbors = [
+                        [cx, cy-1], [cx-1, cy], [cx+1, cy], [cx, cy+1]
+                    ];
+                    
+                    for (let [nx, ny] of orthogonalNeighbors) {
+                        let nkey = `${nx},${ny}`;
+                        if (!processedBlocks.has(nkey) && 
+                            nx >= 0 && nx < COLS && ny >= 0 && ny < ROWS && 
+                            this.board[ny][nx] !== null &&
+                            this.board[ny][nx]['shape'] === shapeType) {
+                            
+                            this.buffCell(nx, ny);
+                            processedBlocks.add(nkey);
+                            stack.push([nx, ny]);
+                        }
+                    }
+                }
+            }
+            clearFullLines() {
+    // Helper: only treat a cell as a block if it's an object with a shape property.
+    function isBlock(cell) {
+        return cell !== null && cell !== undefined && typeof cell === 'object' && ('shape' in cell);
+    }
+
+    // Scrap mapping you asked for
+    const scrapRewards = { 1: 10, 2: 30, 3: 90, 4: 150 };
+
+    // Safety guard (prevents runaway infinite loop in case something else is wrong)
+    let safeguard = 0;
+
+    while (true) {
+        if (++safeguard > ROWS) {
+            console.warn("clearFullLines: safeguard triggered — aborting further clears");
+            break;
+        }
+
+        // find full rows (only rows where every cell is a proper block)
+        let full = [];
+        for (let y = 0; y < ROWS; y++) {
+            // Check if row exists and has correct length
+            if (this.board[y] && this.board[y].length === COLS) {
+                // Check if every cell in the row is a block (not null)
+                let isFull = true;
+                for (let x = 0; x < COLS; x++) {
+                    if (!isBlock(this.board[y][x])) {
+                        isFull = false;
+                        break;
+                    }
+                }
+                if (isFull) {
+                    full.push(y);
+                }
+            }
+        }
+
+        if (full.length === 0) break;
+
+        // apply enemy damage / stun based on how many lines cleared this iteration
+        let lines = full.length;
+        let mult = {1:1, 2:2, 3:3, 4:5}[lines] || 1;
+        for (let e of this.enemies) {
+            e.hp -= mult * 2 + this.level * 0.5;
+            if (lines === 4) e.stunned = 2 * FPS;
+        }
+
+        // remove rows from bottom->top (descending indices) so indexes stay valid
+        full.sort((a, b) => b - a);
+        for (let y of full) {
+            this.board.splice(y, 1);
+        }
+        // Now add the new empty rows at the top, after all removals
+        for (let i = 0; i < lines; i++) {
+            this.board.unshift(Array.from({length: COLS}, () => null));
+        }
+
+        // scraps (5% per level for line clears only)
+const baseScraps = (scrapRewards[lines] !== undefined) ? scrapRewards[lines] : (LINE_CLEAR_SCRAPS * lines);
+this.scraps += Math.round(baseScraps * getLineClearMultiplier(this.level));
+
+// score (5% per level for line clears only)
+this.score += Math.round((LINE_SCORE[lines] || 0) * getLineClearMultiplier(this.level));
+
+        this.level = Math.max(1, 1 + Math.floor(this.score / POINTS_PER_LEVEL));
+        this.gravitySpeed = Math.max(3, Math.floor(BASE_GRAVITY_TICKS / getGravityMultiplier(this.level)));
+
+        // Loop will re-check board for additional (valid) clears (cascade ok)
+    }
+
+    // FIXED: Re-apply helper buffs after clearing lines
+    this.applyHelperBuffs();
+}
+
+            updateOTimersAndExplosions() {
+                let toExplode = [];
+                for (let y = 0; y < ROWS; y++) {
+                    for (let x = 0; x < COLS; x++) {
+                        let c = this.board[y][x];
+                        if (c !== null && c['shape'] === 'O') {
+                            c['oTimer'] = (c['oTimer'] || O_TIMER_FRAMES) - 1;
+                            if (c['oTimer'] <= 0) toExplode.push([y, x, c['buffed'] || false]);
+                        }
+                    }
+                }
+                if (toExplode.length === 0) return;
+
+                const adjacentToDestroy = new Set(); // Only for non-mine blocks
+
+                // 1. Identify adjacent and diagonal blocks based on buff status
+                for (let [y, x, isBuffed] of toExplode) {
+                    let range = isBuffed ? 4 : 3;
+                    
+                    // Check all cells within range
+                    for (let dy = -range; dy <= range; dy++) {
+                        for (let dx = -range; dx <= range; dx++) {
+                            let ny = y + dy;
+                            let nx = x + dx;
+                            if (ny >= 0 && ny < ROWS && nx >= 0 && nx < COLS && this.board[ny][nx] !== null) {
+                                let distance = Math.max(Math.abs(dy), Math.abs(dx));
+                                if (distance <= (isBuffed ? 2 : 1)) {
+                                    const neighborCell = this.board[ny][nx];
+                                    // Make sure it's not part of the same mine
+                                    if (neighborCell.shape !== 'O' || neighborCell.oTimer > 0) {
+                                        adjacentToDestroy.add(`${ny},${nx}`);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // 2. Destroy adjacent/diagonal blocks and create their effects
+                for (const coordStr of adjacentToDestroy) {
+                    const [y, x] = coordStr.split(',').map(Number);
+                    const cell = this.board[y][x];
+                    if (cell) {
+                        const particleColor = cell['buffed'] ? darkenColor(COLORS[cell.shape], HELPER_BUFF_DARKNESS) : COLORS[cell.shape];
+                        const gridX = LEFT_PANEL_WIDTH;
+                        this.spawnExplosionParticles(gridX + x * CELL + CELL / 2, y * CELL + CELL / 2, particleColor, 15, 2.0);
+                        this.board[y][x] = null;
+                    }
+                }
+                
+                // 3. Process the mine itself (damage, big explosion, removal)
+                for (let [y, x, isBuffed] of toExplode) {
+                    let damageRange = isBuffed ? 4 : 3;
+                    let damage = isBuffed ? (5 + this.level * 5) * HELPER_BUFF_MULTIPLIER : (5 + this.level * 5);
+                    
+                    // Damage enemies
+                    for (let e of this.enemies) {
+                        if (Math.max(Math.abs(Math.round(e.y) - y), Math.abs(e.col - x)) <= damageRange) {
+                            e.hp -= damage;
+                        }
+                    }
+                    // Main explosion VFX (enhanced for buffed mines)
+                    let gridX = LEFT_PANEL_WIDTH;
+                    let particleCount = isBuffed ? Math.floor(64 * HELPER_MINE_PARTICLE_MULTIPLIER) : 64;
+                    let particleSpeed = isBuffed ? 3.9 * HELPER_MINE_PARTICLE_SPEED_MULTIPLIER : 3.9;
+                    let particleSize = isBuffed ? 4 : 3;
+                    this.spawnExplosionParticles(gridX + x * CELL + CELL / 2, y * CELL + CELL / 2, COLORS['O'], particleCount, particleSpeed, particleSize);
+                    // Remove the mine cell
+                    this.board[y][x] = null;
+                }
+                
+                // FIXED: Re-apply helper buffs after explosions (critical for fixing the bug)
+                this.applyHelperBuffs();
+            }
+            
+            spawnExplosionParticles(cx, cy, color, count=20, speed=2.5, size=3) {
+                for (let i = 0; i < count; i++) {
+                    let ang = Math.random() * Math.PI * 2;
+                    let spd = Math.random() * (speed - 0.6) + 0.6;
+                    let vx = Math.cos(ang) * spd * (Math.random() * 0.6 + 0.6);
+                    let vy = Math.sin(ang) * spd * (Math.random() * 0.6 + 0.6);
+                    let life = Math.floor(Math.random() * (0.9 * FPS - 0.4 * FPS) + 0.4 * FPS);
+                    this.particles.push(new Particle(cx + (Math.random() * 16 - 8), cy + (Math.random() * 16 - 8), vx, vy, color, life, size));
+                }
+            }
+            
+            // NEW: Check if any Helper block is touching any mortar block
+            hasHelperMortarConnection() {
+                for (let y = 0; y < ROWS; y++) {
+                    for (let x = 0; x < COLS; x++) {
+                        let cell = this.board[y][x];
+                        if (cell !== null && cell['shape'] === 'H') {
+                            // Check all 8 adjacent cells for mortar blocks
+                            let adjacentCells = [
+                                [x-1, y-1], [x, y-1], [x+1, y-1],
+                                [x-1, y],             [x+1, y],
+                                [x-1, y+1], [x, y+1], [x+1, y+1]
+                            ];
+                            
+                            for (let [ax, ay] of adjacentCells) {
+                                if (ax >= 0 && ax < COLS && ay >= 0 && ay < ROWS && this.board[ay][ax] !== null) {
+                                    let adjCell = this.board[ay][ax];
+                                    if (adjCell['shape'] === 'L' || adjCell['shape'] === 'J') {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return false;
+            }
+            
+            turretsFire() {
+                let gridX = LEFT_PANEL_WIDTH;
+                let hasMortarBuff = this.hasHelperMortarConnection();
+                
+                for (let y = 0; y < ROWS; y++) {
+                    for (let x = 0; x < COLS; x++) {
+                        let cell = this.board[y][x];
+                        if (cell === null) continue;
+                        let shape = cell['shape'];
+                        let isBuffed = cell['buffed'] || false;
+                        
+                        if (shape === 'T') {
+                            cell['gatCool'] = (cell['gatCool'] || 0) - 1;
+                            if (cell['gatCool'] <= 0) {
+                                let targets = this.enemies.filter(e => e.col === x && e.y >= y);
+                                if (targets.length > 0) {
+                                    let target = targets.reduce((min, e) => e.y < min.y ? e : min, targets[0]);
+                                    let damage = isBuffed ? 1 * HELPER_BUFF_MULTIPLIER : 1;
+                                    this.projectiles.push(new Projectile(gridX + x * CELL + CELL / 2, y * CELL + CELL / 2, target, this, NEON_RED, damage));
+                                    let cooldown = isBuffed ? Math.floor(0.12 * FPS / HELPER_BUFF_MULTIPLIER) : Math.floor(0.12 * FPS);
+                                    cell['gatCool'] = cooldown;
+                                }
+                            }
+                        } else if (shape === 'L' || shape === 'J') {
+                            cell['mortarCool'] = (cell['mortarCool'] || 0) - 1;
+                            if (cell['mortarCool'] <= 0) {
+                                // Base range is 3 to each side (7 total width)
+                                let baseRange = 3;
+                                // Add helper bonus if any helper is touching any mortar
+                                let range = hasMortarBuff ? baseRange + HELPER_MORTAR_RANGE_BONUS : baseRange;
+                                
+                                let colsRange = Array.from({length: range * 2 + 1}, (_, i) => x - range + i);
+                                let targets = this.enemies.filter(e => colsRange.includes(e.col));
+                                if (targets.length > 0) {
+                                    let target = targets.reduce((min, e) => e.y < min.y ? e : min, targets[0]);
+                                    let sx = gridX + x * CELL + CELL / 2, sy = y * CELL + CELL / 2;
+                                    let [tx, ty] = target.getPositionAtMs(Date.now());
+                                    let dist = Math.hypot(tx - sx, ty - sy);
+                                    let timeSec = dist / (Math.max(16.0, target.baseSpeed * CELL * FPS) * 1.2);
+                                    let duration = Math.min(Math.max(30, timeSec * FPS), 80);
+                                    let mortarColor = (shape === 'J') ? NEON_BLUE : NEON_ORANGE;
+                                    let damage = isBuffed ? 3 * HELPER_BUFF_MULTIPLIER : 3;
+                                    this.mortarProjectiles.push({'sx': sx, 'sy': sy, 'tx': tx, 'ty': ty, 't': 0.0, 'duration': duration, 'damage': damage, 'color': mortarColor, 'target': target});
+                                    let cooldown = isBuffed ? Math.floor(1.1 * FPS / HELPER_BUFF_MULTIPLIER) : Math.floor(1.1 * FPS);
+                                    cell['mortarCool'] = cooldown;
+                                }
+                            }
+                        } else if (shape === 'S' || shape === 'Z') {
+                            cell['pulseTimer'] = ((cell['pulseTimer'] || 0) - 1 + Math.floor(1.0 * FPS)) % Math.floor(1.0 * FPS);
+                        }
+                    }
+                }
+            }
+            updateProjectiles() {
+                this.projectiles = this.projectiles.filter(p => { p.update(); return !p.dead; });
+                this.mortarProjectiles = this.mortarProjectiles.filter(m => {
+                    if (m.target && m.target.hp > 0) [m.tx, m.ty] = m.target.getPositionAtMs(Date.now());
+                    m.t += 1.0 / m.duration;
+                    if (m.t >= 1.0) {
+                        // If the target is still valid, apply damage directly to it.
+                        if (m.target && m.target.hp > 0) {
+                            if (m.target.etype === 'juggernaut') {
+                                // Juggernauts are immune to mortar projectiles, just show a particle effect.
+                                this.spawnExplosionParticles(m.target.getPositionAtMs(Date.now())[0], m.target.getPositionAtMs(Date.now())[1], [100, 100, 100], 4, 1.0);
+                            } else {
+                                // Apply damage to the single target. Miners take reduced damage.
+                                m.target.hp -= m.target.etype === 'miner' ? m.damage * 0.3 : m.damage;
+                            }
+                        }
+                        // The visual explosion at the impact point remains.
+                        this.spawnExplosionParticles(m.tx, m.ty, m.color, 18, 2.0);
+                        return false;
+                    }
+                    return true;
+                });
+            }
+            applySlowingFields() {
+                for (let e of this.enemies) {
+                    e.slowLevel = 0;
+                    let row = Math.round(e.y), col = e.col;
+                    for (let dy = -1; dy <= 1; dy++) {
+                        for (let dx = -1; dx <= 1; dx++) {
+                            let r = row + dy, c = col + dx;
+                            if (r >= 0 && r < ROWS && c >= 0 && c < COLS && this.board[r][c] !== null && (this.board[r][c]['shape'] === 'S' || this.board[r][c]['shape'] === 'Z')) {
+                                let slowAmount = this.board[r][c]['buffed'] ? 1.15 * HELPER_BUFF_MULTIPLIER : 1.15;
+                                e.slowLevel += slowAmount;
+                            }
+                        }
+                    }
+                }
+            }
+            damageCheckAndCleanupEnemies() {
+                for (let i = this.enemies.length - 1; i >= 0; i--) {
+                    let e = this.enemies[i];
+                    if (e.hp <= 0) {
+                        // --- EDITED: Added level-based multipliers for score and scraps ---
+                        this.score += Math.round(e.reward * (1.1 ** (this.level - 1)));
+                        this.scraps += Math.round(e.scrap_reward * getScrapsMultiplier(this.level));
+                        let [cx, cy] = e.getPositionAtMs(Date.now());
+                        this.spawnExplosionParticles(cx, cy, e.color, 10, 1.6);
+                        this.enemies.splice(i, 1);
+                    }
+                }
+                this.level = Math.max(1, 1 + Math.floor(this.score / POINTS_PER_LEVEL));
+                this.gravitySpeed = Math.max(3, Math.floor(BASE_GRAVITY_TICKS / getGravityMultiplier(this.level)));
+            }
+            enemyUpdates() {
+                for (let i = this.enemies.length - 1; i >= 0; i--) {
+                    let e = this.enemies[i];
+                    let r = e.update(this.board);
+                    if (r === "TOP") { this.gameOver = true; this.gameOverReason = "enemy reached top"; return; }
+                    if (r === "BOMB") {
+                        let row = Math.round(e.y), col = e.col;
+                        let removeCoords = new Set();
+                        for (let dy = -1; dy <= 0; dy++) for (let dx = -1; dx <= 1; dx++) {
+                            let ry = row + dy, rx = col + dx;
+                            if (ry >= 0 && ry < ROWS && rx >= 0 && rx < COLS) removeCoords.add(`${ry},${rx}`);
+                        }
+                        for (let coord of removeCoords) {
+                            let [ry, rx] = coord.split(',').map(Number);
+                            if (this.board[ry][rx] !== null) {
+                                let gridX = LEFT_PANEL_WIDTH;
+                                this.spawnExplosionParticles(gridX + rx * CELL + CELL / 2, ry * CELL + CELL / 2, [255, 200, 120], 12, 2.2);
+                                this.board[ry][rx] = null;
+                            }
+                        }
+                        this.enemies.splice(i, 1);
+                        // FIXED: Re-apply helper buffs after enemy bombing
+                        this.applyHelperBuffs();
+                    }
+                }
+            }
+            gameTick() {
+                this.ticks += 1;
+                this.turretsFire();
+                this.updateProjectiles();
+                this.updateOTimersAndExplosions();
+                this.applySlowingFields();
+                this.enemyUpdates();
+                this.damageCheckAndCleanupEnemies();
+                this.waveTimer -= 1;
+                if (this.waveTimer <= 0) {
+                    this.spawnWave();
+                    this.waveTimer = Math.max(3 * FPS, Math.floor(BASE_WAVE_INTERVAL * Math.max(0.4, 1.0 - (this.level - 1) * 0.03)));
+                }
+                this.particles = this.particles.filter(p => { p.update(); return p.life > 0; });
+            }
+            drawPiecePreviewBox(kind, boxX, boxY, boxW, boxH) {
+                let cellSize = Math.min(boxW, boxH) / 4;
+                let shapeCells = SHAPES[kind];
+                let xs = shapeCells.map(c => c[0]), ys = shapeCells.map(c => c[1]);
+                let minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+                let shapeWidth = maxX - minX + 1, shapeHeight = maxY - minY + 1;
+                let baseX = boxX + (boxW - shapeWidth * cellSize) / 2;
+                let baseY = boxY + (boxH - shapeHeight * cellSize) / 2;
+                let ctx = this.ctx;
+                let color = COLORS[kind];
+                for (let [cx, cy] of shapeCells) {
+                    let rx = baseX + (cx - minX) * cellSize + 2, ry = baseY + (cy - minY) * cellSize + 2;
+                    let rw = cellSize - 4, rh = cellSize - 4;
+                    neonRect(ctx, rx, ry, rw, rh, color, 2);
+                    let [r, g, b] = color;
+                    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${BLOCK_FILL_ALPHA})`;
+                    ctx.fillRect(rx, ry, rw, rh);
+                }
+            }
+            drawBoard() {
+                let ctx = this.ctx;
+                let gridX = LEFT_PANEL_WIDTH; // Offset for the grid
+                ctx.fillStyle = `rgb(${BLACK[0]},${BLACK[1]},${BLACK[2]})`;
+                ctx.fillRect(gridX, 0, GRID_W, GRID_H);
+                ctx.strokeStyle = `rgb(${GRID_COLOR[0]},${GRID_COLOR[1]},${GRID_COLOR[2]})`;
+                ctx.lineWidth = 1;
+                for (let x = 0; x <= COLS; x++) {
+                    ctx.beginPath(); ctx.moveTo(gridX + x * CELL, 0); ctx.lineTo(gridX + x * CELL, GRID_H); ctx.stroke();
+                }
+                for (let y = 0; y <= ROWS; y++) {
+                    ctx.beginPath(); ctx.moveTo(gridX, y * CELL); ctx.lineTo(gridX + GRID_W, y * CELL); ctx.stroke();
+                }
+                for (let y = 0; y < ROWS; y++) {
+                    for (let x = 0; x < COLS; x++) {
+                        let cell = this.board[y][x];
+                        if (cell !== null) {
+                            let shape = cell['shape']; 
+                            let baseColor = COLORS[shape];
+                            let color = cell['buffed'] ? darkenColor(baseColor, HELPER_BUFF_DARKNESS) : baseColor;
+                            let rx = gridX + x * CELL + 2, ry = y * CELL + 2, rw = CELL - 4, rh = CELL - 4;
+                            neonRect(ctx, rx, ry, rw, rh, color, 2);
+                            
+                            // Adjust HP display for buffed blocks
+                            let maxHp = cell['buffed'] && shape !== 'H' ? BASE_HP[shape] * HELPER_BUFF_MULTIPLIER : BASE_HP[shape];
+                            let hpFrac = Math.max(0, cell['hp'] / maxHp);
+                            if (hpFrac > 0.01) {
+                                let [r, g, b] = color;
+                                ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${BLOCK_FILL_ALPHA})`;
+                                let fillHeight = Math.floor(rh * hpFrac);
+                                ctx.fillRect(rx, ry + (rh - fillHeight), rw, fillHeight);
+                            }
+                            if (shape === 'O') {
+                                let frac = Math.max(0, (cell['oTimer'] || O_TIMER_FRAMES) / O_TIMER_FRAMES);
+                                let cx = gridX + x * CELL + CELL / 2, cy = y * CELL + CELL / 2;
+                                let radius = CELL / 3; let steps = 12;
+                                ctx.strokeStyle = `rgb(${color[0]},${color[1]},${color[2]})`; ctx.lineWidth = 2;
+                                for (let i = 0; i < Math.floor(steps * frac); i++) {
+                                    let ang = (i / steps) * Math.PI * 2;
+                                    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(ang) * (radius + 4), cy + Math.sin(ang) * (radius + 4)); ctx.stroke();
+                                }
+                            }
+                            if (shape === 'S' || shape === 'Z') {
+                                let pt = cell['pulseTimer'] || 0;
+                                let cx = gridX + x * CELL + CELL / 2, cy = y * CELL + CELL / 2;
+                                if (pt < FPS / 2) {
+                                    let pfrac = 1 - pt / (FPS / 2);
+                                    let rr = Math.floor((CELL / 3) * (1 + pfrac * 0.6));
+                                    let [r, g, b] = color;
+                                    ctx.fillStyle = `rgba(${r},${g},${b},0.01)`;
+                                    ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.fill();
+                                }
+                                let glowRad = Math.floor(CELL * 1.5); let [r, g, b] = color;
+                                for (let i = 0; i < 8; i++) {
+                                    let alpha = ((1 * (7 - i)) / 255) * PLACED_RING_OPACITY;
+                                    ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+                                    ctx.beginPath(); ctx.arc(cx, cy, glowRad + i * 2, 0, Math.PI * 2); ctx.fill();
+                                }
+                            }
+                            // NEW: Visual indicator for Helper blocks
+                            if (shape === 'H') {
+                                let cx = gridX + x * CELL + CELL / 2, cy = y * CELL + CELL / 2;
+                                // Draw a pulsing helper glow
+                                let pulsePhase = (this.ticks % 60) / 60;
+                                let pulseSize = Math.sin(pulsePhase * Math.PI * 2) * 3 + 12;
+                                ctx.strokeStyle = `rgba(${color[0]},${color[1]},${color[2]},0.5)`;
+                                ctx.lineWidth = 2;
+                                ctx.beginPath();
+                                ctx.arc(cx, cy, pulseSize, 0, Math.PI * 2);
+                                ctx.stroke();
+                            }
+                        }
+                    }
+                }
+                let ghostPiece = this.getGhostPiecePosition();
+    if (ghostPiece && ghostPiece.y !== this.piece.y) { // Only draw if ghost is different from current piece
+        for (let [cx, cy] of ghostPiece.cells) {
+            let gx = ghostPiece.x + cx;
+            let gy = ghostPiece.y + cy;
+            if (gy >= 0 && gx >= 0 && gx < COLS && gy < ROWS) {
+                let shape = this.piece.kind;
+                let color = COLORS[shape];
+                let rx = gridX + gx * CELL + 2, ry = gy * CELL + 2, rw = CELL - 4, rh = CELL - 4;
+                
+                // Draw ghost outline only (no fill)
+                let [r, g, b] = color;
+                ctx.strokeStyle = `rgba(${r},${g},${b},${GHOST_PIECE_ALPHA})`;
+                ctx.lineWidth = 2;
+                ctx.strokeRect(rx, ry, rw, rh);
+            }
+        }
+    }
+                for (let [gx, gy] of this.piece.getGlobalCells()) {
+                    if (gy >= 0) {
+                        let shape = this.piece.kind; let color = COLORS[shape];
+                        let rx = gridX + gx * CELL + 2, ry = gy * CELL + 2, rw = CELL - 4, rh = CELL - 4;
+                        neonRect(ctx, rx, ry, rw, rh, color, 2);
+                        let [r, g, b] = color;
+                        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${BLOCK_FILL_ALPHA})`;
+                        ctx.fillRect(rx, ry, rw, rh);
+                        if (shape === 'S' || shape === 'Z') {
+                            let cx = gridX + gx * CELL + CELL / 2, cy = gy * CELL + CELL / 2;
+                            let glowRad = Math.floor(CELL * 1.5);
+                            for (let i = 0; i < 8; i++) {
+                                let alpha = ((1 * (7 - i)) / 255) / FALLING_RING_FADE_FACTOR;
+                                ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+                                ctx.beginPath(); ctx.arc(cx, cy, glowRad + i * 2, 0, Math.PI * 2); ctx.fill();
+                            }
+                        }
+                    }
+                }
+            }
+            // --- NEW: Function to draw the left UI panel ---
+            drawLeftPanel() {
+    let ctx = this.ctx;
+    let sx = Math.floor(15 * 1.1); // Start drawing with a margin for the detached effect (10% larger)
+    let panelW = LEFT_PANEL_WIDTH - Math.floor(30 * 1.1); // Adjust width for margins (10% larger)
+    let panelH = SCREEN_H - Math.floor(30 * 1.1); // 10% larger
+    let panelY = Math.floor(15 * 1.1); // 10% larger
+
+    // Draw glowing background for the panel
+    neonRect(ctx, sx, panelY, panelW, panelH, NEON_BLUE, 3, 10);
+    ctx.fillStyle = 'rgba(14,8,22, 0.8)';
+    ctx.fillRect(sx, panelY, panelW, panelH);
+
+    // Draw "SCRAPS:" text
+    let scrapsText = "SCRAPS:";
+    ctx.font = `${FONT_SCRAPS_SIZE}px Consolas, monospace`;
+    let textMetrics = ctx.measureText(scrapsText);
+    let textX = sx + (panelW - textMetrics.width) / 2;
+    drawText(ctx, scrapsText, textX, Math.floor(60 * 1.1), FONT_SCRAPS_SIZE, NEON_YELLOW); // 10% larger
+    
+    // Draw the scraps number
+    let scrapsNumber = this.scraps.toString();
+    ctx.font = `${FONT_BIG_SIZE}px Consolas, monospace`;
+    let numberMetrics = ctx.measureText(scrapsNumber);
+    let numberX = sx + (panelW - numberMetrics.width) / 2;
+    drawText(ctx, scrapsNumber, numberX, Math.floor(105 * 1.1), FONT_BIG_SIZE, WHITE); // 10% larger
+    
+    // --- Draw "Buy Mine" Button ---
+    let buttonY = Math.floor(125 * 1.1); // 10% larger
+    let panelMargin = Math.floor(10 * 1.1); // 10% larger
+    let buttonW = panelW - (panelMargin * 2);
+    let buttonH = Math.floor(65 * 1.1); // Increased height for better layout (10% larger)
+    let buttonX = sx + panelMargin;
+
+    // Store bounds for click detection
+    this.mineButtonBounds = {x: buttonX, y: buttonY, w: buttonW, h: buttonH};
+    let canAfford = this.scraps >= MINE_COST;
+    ctx.save();
+    if (!canAfford) {
+        ctx.globalAlpha = 0.5; // Greyed out effect
+    }
+    
+    let buttonColor = canAfford ? NEON_CYAN : [80, 80, 100];
+    let cornerRadius = Math.floor(12 * 1.1); // Define the roundness (10% larger)
+    neonRoundedRect(ctx, buttonX, buttonY, buttonW, buttonH, buttonColor, cornerRadius, 2, canAfford ? 6 : 1);
+    
+    // Button Text
+    drawText(ctx, "Buy Mine:", buttonX + Math.floor(8 * 1.1), buttonY + Math.floor(24 * 1.1), FONT_MED_SIZE, WHITE); // 10% larger
+    
+    // O-Block Preview
+    let previewSize = Math.floor(40 * 1.1); // 10% larger
+    let previewX = buttonX + buttonW - previewSize - Math.floor(5 * 1.1); // 10% larger
+    let previewY = buttonY + 0;
+    this.drawPiecePreviewBox('O', previewX, previewY, previewSize, previewSize);
+
+    // Hotkey Text - "(Z)" bottom-left
+    drawText(ctx, "(Z)", buttonX + Math.floor(10 * 1.1), buttonY + buttonH - Math.floor(10 * 1.1), FONT_SMALL_SIZE, WHITE); // 10% larger
+
+    // Cost Text - bottom-right
+    let costText = `${MINE_COST} Scraps`;
+    ctx.font = `${FONT_SMALL_SIZE}px Consolas, monospace`;
+    let costMetrics = ctx.measureText(costText);
+    drawText(ctx, costText, buttonX + buttonW - costMetrics.width - Math.floor(10 * 1.1), buttonY + buttonH - Math.floor(10 * 1.1), FONT_SMALL_SIZE, NEON_YELLOW); // 10% larger
+
+    ctx.restore();
+
+    // --- Draw "Grid Shift" Button ---
+    let shiftButtonY = buttonY + buttonH + Math.floor(20 * 1.1); // Position below mine button (10% larger)
+    let shiftButtonX = buttonX;
+    let shiftButtonW = buttonW;
+    let shiftButtonH = buttonH;
+
+    // Store bounds for click detection
+    this.gridShiftButtonBounds = {x: shiftButtonX, y: shiftButtonY, w: shiftButtonW, h: shiftButtonH};
+    let canAffordShift = this.scraps >= GRID_SHIFT_COST;
+    ctx.save();
+    if (!canAffordShift) {
+        ctx.globalAlpha = 0.5; // Greyed out effect
+    }
+    
+    let shiftButtonColor = canAffordShift ? NEON_MAGENTA : [80, 80, 100];
+    neonRoundedRect(ctx, shiftButtonX, shiftButtonY, shiftButtonW, shiftButtonH, shiftButtonColor, cornerRadius, 2, canAffordShift ? 6 : 1);
+    
+    // Button Text
+    drawText(ctx, "Shift Blocks:", shiftButtonX + Math.floor(8 * 1.1), shiftButtonY + Math.floor(24 * 1.1), Math.floor(16 * 1.1), WHITE); // 10% larger
+    
+    // Down Arrow Icon
+    let arrowSize = Math.floor(35 * 1.1); // 10% larger
+    let arrowX = shiftButtonX + shiftButtonW - arrowSize + Math.floor(6 * 1.1); // 10% larger
+    let arrowY = shiftButtonY + Math.floor(5 * 1.1); // 10% larger
+    drawDownArrow(ctx, arrowX, arrowY, arrowSize, canAffordShift ? NEON_MAGENTA : [120, 120, 140]);
+
+    // Hotkey Text - "(X)" bottom-left
+    drawText(ctx, "(X)", shiftButtonX + Math.floor(10 * 1.1), shiftButtonY + shiftButtonH - Math.floor(10 * 1.1), FONT_SMALL_SIZE, WHITE); // 10% larger
+
+    // Cost Text - bottom-right
+    let shiftCostText = `${GRID_SHIFT_COST} Scraps`;
+    ctx.font = `${FONT_SMALL_SIZE}px Consolas, monospace`;
+    let shiftCostMetrics = ctx.measureText(shiftCostText);
+    drawText(ctx, shiftCostText, shiftButtonX + shiftButtonW - shiftCostMetrics.width - Math.floor(10 * 1.1), shiftButtonY + shiftButtonH - Math.floor(10 * 1.1), FONT_SMALL_SIZE, NEON_YELLOW); // 10% larger
+
+    ctx.restore();
+
+    // --- NEW: Draw "Block Duplicator" Button ---
+    let duplicatorButtonY = shiftButtonY + shiftButtonH + Math.floor(20 * 1.1); // Position below grid shift button
+    let duplicatorButtonX = buttonX;
+    let duplicatorButtonW = buttonW;
+    let duplicatorButtonH = buttonH;
+
+    // Store bounds for click detection
+    this.blockDuplicatorButtonBounds = {x: duplicatorButtonX, y: duplicatorButtonY, w: duplicatorButtonW, h: duplicatorButtonH};
+    let canAffordDuplicator = this.scraps >= BLOCK_DUPLICATOR_COST && this.piece;
+    ctx.save();
+    if (!canAffordDuplicator) {
+        ctx.globalAlpha = 0.5; // Greyed out effect
+    }
+    
+    let duplicatorButtonColor = canAffordDuplicator ? NEON_ORANGE : [80, 80, 100];
+    neonRoundedRect(ctx, duplicatorButtonX, duplicatorButtonY, duplicatorButtonW, duplicatorButtonH, duplicatorButtonColor, cornerRadius, 2, canAffordDuplicator ? 6 : 1);
+    
+    // Button Text
+    drawText(ctx, "Duplicator:", duplicatorButtonX + Math.floor(8 * 1.1), duplicatorButtonY + Math.floor(24 * 1.1), Math.floor(16 * 1.1), WHITE);
+    
+    // Duplicator Icon
+    let iconSize = Math.floor(35 * 1.1);
+    let iconX = duplicatorButtonX + duplicatorButtonW - iconSize + Math.floor(-10 * 1.1);
+    let iconY = duplicatorButtonY + Math.floor(0 * 1.1);
+    drawDuplicatorIcon(ctx, iconX, iconY, iconSize, canAffordDuplicator ? NEON_ORANGE : [120, 120, 140]);
+
+    // Hotkey Text - "(C)" bottom-left
+    drawText(ctx, "(C)", duplicatorButtonX + Math.floor(10 * 1.1), duplicatorButtonY + duplicatorButtonH - Math.floor(10 * 1.1), FONT_SMALL_SIZE, WHITE);
+
+    // Cost Text - bottom-right
+    let duplicatorCostText = `${BLOCK_DUPLICATOR_COST} Scraps`;
+    ctx.font = `${FONT_SMALL_SIZE}px Consolas, monospace`;
+    let duplicatorCostMetrics = ctx.measureText(duplicatorCostText);
+    drawText(ctx, duplicatorCostText, duplicatorButtonX + duplicatorButtonW - duplicatorCostMetrics.width - Math.floor(10 * 1.1), duplicatorButtonY + duplicatorButtonH - Math.floor(10 * 1.1), FONT_SMALL_SIZE, NEON_YELLOW);
+
+    ctx.restore();
+}
+            drawSidePanel() {
+                let ctx = this.ctx;
+                let sx = LEFT_PANEL_WIDTH + GRID_W; // Offset by left panel and grid
+                ctx.fillStyle = 'rgb(14,8,22)';
+                ctx.fillRect(sx, 0, SIDE_PANEL, SCREEN_H);
+                drawText(ctx, `SCORE: ${this.score}`, sx + Math.floor(20 * 1.1), Math.floor(20 * 1.1) + FONT_MED_SIZE, FONT_MED_SIZE); // 10% larger
+                drawText(ctx, `LEVEL: ${this.level}`, sx + Math.floor(20 * 1.1), Math.floor(50 * 1.1) + FONT_MED_SIZE, FONT_MED_SIZE); // 10% larger
+                drawText(ctx, `WAVE: ${this.waveNumber}`, sx + Math.floor(20 * 1.1), Math.floor(80 * 1.1) + FONT_MED_SIZE, FONT_MED_SIZE); // 10% larger
+                drawText(ctx, "HOLD:", sx + Math.floor(260 * 1.1), Math.floor(20 * 1.1) + FONT_MED_SIZE, FONT_MED_SIZE); // 10% larger
+                let holdBoxX = sx + Math.floor(260 * 1.1), holdBoxY = Math.floor(40 * 1.1), holdBoxW = Math.floor(100 * 1.1), holdBoxH = Math.floor(100 * 1.1); // 10% larger
+                ctx.fillStyle = 'rgb(20,14,30)'; ctx.fillRect(holdBoxX, holdBoxY, holdBoxW, holdBoxH);
+                if (this.holdPiece !== null) this.drawPiecePreviewBox(this.holdPiece.kind, holdBoxX, holdBoxY, holdBoxW, holdBoxH);
+                drawText(ctx, "NEXT:", sx + Math.floor(140 * 1.1), Math.floor(20 * 1.1) + FONT_MED_SIZE, FONT_MED_SIZE); // 10% larger
+                let previewBoxX = sx + Math.floor(140 * 1.1), previewBoxY = Math.floor(40 * 1.1), previewBoxW = Math.floor(100 * 1.1), previewBoxH = Math.floor(100 * 1.1); // 10% larger
+                ctx.fillStyle = 'rgb(20,14,30)'; ctx.fillRect(previewBoxX, previewBoxY, previewBoxW, previewBoxH);
+                this.drawPiecePreviewBox(this.nextPiece.kind, previewBoxX, previewBoxY, previewBoxW, previewBoxH);
+                drawText(ctx, "NEXT WAVE:", sx + Math.floor(20 * 1.1), Math.floor(140 * 1.1) + FONT_MED_SIZE, FONT_MED_SIZE); // 10% larger
+                if (this.isPreMiniBossWave(this.waveNumber)) drawText(ctx, "MINI-BOSS INCOMING!", sx + Math.floor(130 * 1.1), Math.floor(144 * 1.1) + FONT_SMALL_SIZE, FONT_SMALL_SIZE, NEON_ORANGE); // 10% larger
+                let barW = SIDE_PANEL - Math.floor(40 * 1.1), barH = Math.floor(20 * 1.1), barX = sx + Math.floor(20 * 1.1), barY = Math.floor(170 * 1.1); // 10% larger
+                ctx.fillStyle = 'rgb(30,30,40)'; ctx.fillRect(barX, barY, barW, barH);
+                let maxInterval = Math.max(1, Math.floor(BASE_WAVE_INTERVAL * Math.max(0.4, 1.0 - (this.level - 1) * 0.03)));
+                let frac = 1 - Math.max(0, Math.min(this.waveTimer, maxInterval)) / maxInterval;
+                let barColor = this.isMiniBossWave(this.waveNumber + 1) ? NEON_ORANGE : NEON_CYAN;
+                ctx.fillStyle = `rgb(${barColor[0]},${barColor[1]},${barColor[2]})`;
+                ctx.fillRect(barX, barY, Math.floor(barW * frac), barH);
+                drawText(ctx, `${Math.floor(this.waveTimer / FPS)}s`, sx + Math.floor(20 * 1.1), Math.floor(200 * 1.1) + FONT_SMALL_SIZE, FONT_SMALL_SIZE); // 10% larger
+                drawText(ctx, "KEY:", sx + Math.floor(20 * 1.1), Math.floor(230 * 1.1) + FONT_MED_SIZE, FONT_MED_SIZE); // 10% larger
+                let yOff = Math.floor(270 * 1.1); // 10% larger
+                for (let [col, desc] of LEGEND) {
+                    ctx.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`; ctx.fillRect(sx + Math.floor(24 * 1.1), yOff, Math.floor(20 * 1.1), Math.floor(16 * 1.1)); // 10% larger
+                    drawText(ctx, desc, sx + Math.floor(52 * 1.1), yOff - Math.floor(2 * 1.1) + FONT_SMALL_SIZE, FONT_SMALL_SIZE, col); // 10% larger
+                    yOff += Math.floor(26 * 1.1); // 10% larger
+                }
+                drawText(ctx, "ENEMIES:", sx + Math.floor(20 * 1.1), yOff + Math.floor(8 * 1.1) + FONT_MED_SIZE, FONT_MED_SIZE);
+yOff += Math.floor(32 * 1.1);
+
+// FIXED: Calculate and display level-scaled stats
+let levelMultiplier;
+if (this.level <= 10) {
+    levelMultiplier = 1.0 + (this.level - 1) * 0.05; // 5% for levels 1-10
+} else {
+    // 5% for first 10 levels, then 2.5% for each level beyond 10
+    levelMultiplier = 1.0 + 9 * 0.05 + (this.level - 10) * 0.025;
+}
+
+for (let key of Object.keys(ENEMY_DEFS)) {
+    let d = ENEMY_DEFS[key];
+    
+    // Calculate scaled stats
+    let scaledHp = Math.floor(d.hp * levelMultiplier);
+    let scaledSpeed = d.speed * levelMultiplier;
+    let scaledDamage = d.damage * levelMultiplier;
+    
+    // Format for display - round down if bonus is less than 0.1
+    let displaySpeed = (scaledSpeed * 100);
+    let displayDamage = (scaledDamage * 10);
+    
+    // Round down if the difference is less than 0.1 (visually only)
+    if ((displaySpeed % 1) < 0.1) displaySpeed = Math.floor(displaySpeed);
+    if ((displayDamage % 1) < 0.1) displayDamage = Math.floor(displayDamage);
+    
+    // Format to remove unnecessary decimals
+    let spdText = displaySpeed.toFixed(1).replace(/\.0$/, '');
+    let dmgText = displayDamage.toFixed(1).replace(/\.0$/, '');
+    
+    let line = `${capitalize(key)} HP:${scaledHp} SPD:${spdText} DMG:${dmgText}`;
+    if (key === 'juggernaut') line += " (Armored)";
+    if (key === 'miner') line += " (Semi Armored)";
+    drawText(ctx, line, sx + Math.floor(24 * 1.1), yOff + FONT_SMALL_SIZE, FONT_SMALL_SIZE, d.color);
+    yOff += Math.floor(18 * 1.1);
+}
+} // Make sure this closing brace exists for drawSidePanel
+            draw() {
+
+                // Clear the entire canvas with the background color
+                this.ctx.fillStyle = `rgb(${DARK_PURPLE[0]},${DARK_PURPLE[1]},${DARK_PURPLE[2]})`;
+                this.ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+
+                // Draw each section
+                this.drawLeftPanel();
+                this.drawBoard();
+                this.drawSidePanel();
+
+                // Draw overlays (enemies, projectiles, particles)
+                for (let e of this.enemies) e.draw(this.ctx);
+                for (let p of this.projectiles) p.draw(this.ctx);
+                for (let m of this.mortarProjectiles) {
+                    let t = m['t'];
+                    let qx = (1 - t) ** 2 * m.sx + 2 * (1 - t) * t * ((m.sx + m.tx) / 2) + t ** 2 * m.tx;
+                    let qy = (1 - t) ** 2 * m.sy + 2 * (1 - t) * t * (m.sy - Math.min(120, Math.abs(m.tx - m.sx) / 2 + 60)) + t ** 2 * m.ty;
+                    this.ctx.fillStyle = `rgb(${m.color[0]},${m.color[1]},${m.color[2]})`;
+                    this.ctx.beginPath(); this.ctx.arc(Math.floor(qx), Math.floor(qy), 4.2, 0, Math.PI * 2); this.ctx.fill();
+                }
+                for (let p of this.particles) p.draw(this.ctx);
+
+                // Add this at the end of the draw() method
+                drawText(this.ctx, this.currentFps.toString(), 5, 15, 12, WHITE);
+
+                // Draw game state overlays (paused, game over)
+                if (this.paused) {
+                    this.ctx.fillStyle = 'rgba(0,0,0,0.5)'; this.ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+                    drawText(this.ctx, "PAUSED", SCREEN_W / 2 - Math.floor(40 * 1.1), SCREEN_H / 2 - Math.floor(20 * 1.1) + FONT_BIG_SIZE, FONT_BIG_SIZE, NEON_YELLOW); // 10% larger
+                }
+                if (this.gameOver) {
+                    this.ctx.fillStyle = 'rgba(0,0,0,0.7)'; this.ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+                    drawText(this.ctx, "GAME OVER", SCREEN_W / 2 - Math.floor(100 * 1.1), SCREEN_H / 2 - Math.floor(40 * 1.1) + FONT_BIG_SIZE, FONT_BIG_SIZE, NEON_RED); // 10% larger
+                    drawText(this.ctx, `Reason: ${this.gameOverReason}`, SCREEN_W / 2 - Math.floor(100 * 1.1), SCREEN_H / 2 + Math.floor(10 * 1.1) + FONT_MED_SIZE, FONT_MED_SIZE, WHITE); // 10% larger
+                    drawText(this.ctx, `Final Score: ${this.score}`, SCREEN_W / 2 - Math.floor(100 * 1.1), SCREEN_H / 2 + Math.floor(40 * 1.1) + FONT_MED_SIZE, FONT_MED_SIZE, WHITE); // 10% larger
+                    drawText(this.ctx, "Press R to Restart", SCREEN_W / 2 - Math.floor(100 * 1.1), SCREEN_H / 2 + Math.floor(90 * 1.1) + FONT_MED_SIZE, FONT_MED_SIZE, NEON_CYAN); // 10% larger
+                }
+            }
+
+            // NEW: Block duplicator power-up function
+useBlockDuplicator() {
+    if (this.scraps >= BLOCK_DUPLICATOR_COST && this.piece) {
+        this.scraps -= BLOCK_DUPLICATOR_COST;
+        
+        // Set the next 2 pieces to be the same as current falling piece
+        this.duplicatorQueue = [this.piece.kind, this.piece.kind];
+        
+        // ADDED: Update nextPiece immediately to show the first item in queue
+        this.nextPiece = new Piece(this.duplicatorQueue[0]);
+        
+        // Create particle explosion at button center
+        let buttonX = this.blockDuplicatorButtonBounds.x + this.blockDuplicatorButtonBounds.w / 2;
+        let buttonY = this.blockDuplicatorButtonBounds.y + this.blockDuplicatorButtonBounds.h / 2;
+        this.spawnExplosionParticles(buttonX, buttonY, NEON_ORANGE, 20, 2.0);
+    }
+}
+        }
+        function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+        // ----------------- ENTRY POINT -----------------
+        new Game();
+    </script>
+</body>
+</html>
